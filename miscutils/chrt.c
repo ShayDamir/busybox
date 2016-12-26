@@ -17,13 +17,16 @@
 //kbuild:lib-$(CONFIG_CHRT) += chrt.o
 
 //usage:#define chrt_trivial_usage
-//usage:       "[-prfom] [PRIO] [PID | PROG ARGS]"
+//usage:       "[-prdfom] [PRIO] [PID | PROG ARGS]"
 //usage:#define chrt_full_usage "\n\n"
 //usage:       "Change scheduling priority and class for a process\n"
 //usage:     "\n	-p	Operate on PID"
+//usage:     "\n	-d	Set SCHED_DEADLINE class"
 //usage:     "\n	-r	Set SCHED_RR class"
 //usage:     "\n	-f	Set SCHED_FIFO class"
 //usage:     "\n	-o	Set SCHED_OTHER class"
+//usage:     "\n	-b	Set SCHED_BATCH class"
+//usage:     "\n	-i	Set SCHED_IDLE class"
 //usage:     "\n	-m	Show min/max priorities"
 //usage:
 //usage:#define chrt_example_usage
@@ -32,31 +35,42 @@
 //usage:       "You need CAP_SYS_NICE privileges to set scheduling attributes of a process"
 
 #include <sched.h>
+#include <linux/sched.h>
 #include "libbb.h"
 
 static const struct {
 	int policy;
-	char name[sizeof("SCHED_OTHER")];
+        char name[sizeof("DEADLINE")];
 } policies[] = {
-	{SCHED_OTHER, "SCHED_OTHER"},
-	{SCHED_FIFO, "SCHED_FIFO"},
-	{SCHED_RR, "SCHED_RR"}
+        {SCHED_OTHER, "OTHER"},
+        {SCHED_FIFO, "FIFO"},
+        {SCHED_RR, "RR"},
+        {SCHED_BATCH, "BATCH"},
+        {SCHED_IDLE, "IDLE"},
+        {SCHED_DEADLINE, "DEADLINE"}
 };
 
-//TODO: add
-// -b, SCHED_BATCH
-// -i, SCHED_IDLE
+static const char* get_policy_name(int pol)
+{
+    unsigned i;
+    for (i = 0; i < sizeof(policies) / sizeof(policies[0]); i++) {
+        if (policies[i].policy == pol) {
+            return policies[i].name;
+        }
+    }
+    return NULL;
+}
 
 static void show_min_max(int pol)
 {
-	const char *fmt = "%s min/max priority\t: %u/%u\n";
+        const char *fmt = "SCHED_%s min/max priority\t: %u/%u\n";
 	int max, min;
 
 	max = sched_get_priority_max(pol);
 	min = sched_get_priority_min(pol);
 	if ((max|min) < 0)
-		fmt = "%s not supported\n";
-	printf(fmt, policies[pol].name, min, max);
+                fmt = "SCHED_%s not supported\n";
+        printf(fmt, get_policy_name(pol), min, max);
 }
 
 #define OPT_m (1<<0)
@@ -64,6 +78,9 @@ static void show_min_max(int pol)
 #define OPT_r (1<<2)
 #define OPT_f (1<<3)
 #define OPT_o (1<<4)
+#define OPT_b (1<<5)
+#define OPT_i (1<<6)
+#define OPT_d (1<<7)
 
 int chrt_main(int argc, char **argv) MAIN_EXTERNALLY_VISIBLE;
 int chrt_main(int argc UNUSED_PARAM, char **argv)
@@ -77,8 +94,8 @@ int chrt_main(int argc UNUSED_PARAM, char **argv)
 	int policy = SCHED_RR;
 
 	/* only one policy accepted */
-	opt_complementary = "r--fo:f--ro:o--rf";
-	opt = getopt32(argv, "+mprfo");
+        opt_complementary = "r--fodbi:f--robid:o--rfbid:b--rfoid;i--rfobd;d--rfobi";
+        opt = getopt32(argv, "+mprfobid");
 	if (opt & OPT_m) { /* print min/max and exit */
 		show_min_max(SCHED_FIFO);
 		show_min_max(SCHED_RR);
@@ -91,6 +108,12 @@ int chrt_main(int argc UNUSED_PARAM, char **argv)
 		policy = SCHED_FIFO;
 	if (opt & OPT_o)
 		policy = SCHED_OTHER;
+        if (opt & OPT_b)
+                policy = SCHED_BATCH;
+        if (opt & OPT_i)
+                policy = SCHED_IDLE;
+        if (opt & OPT_d)
+                policy = SCHED_DEADLINE;
 
 	argv += optind;
 	if (!argv[0])
@@ -116,8 +139,8 @@ int chrt_main(int argc UNUSED_PARAM, char **argv)
 		pol = sched_getscheduler(pid);
 		if (pol < 0)
 			bb_perror_msg_and_die("can't %cet pid %d's policy", 'g', (int)pid);
-		printf("pid %d's %s scheduling policy: %s\n",
-				pid, current_new, policies[pol].name);
+                printf("pid %d's %s scheduling policy: SCHED_%s\n",
+                                pid, current_new, get_policy_name(pol));
 		if (sched_getparam(pid, &sp))
 			bb_perror_msg_and_die("can't get pid %d's attributes", (int)pid);
 		printf("pid %d's %s scheduling priority: %d\n",
@@ -136,9 +159,11 @@ int chrt_main(int argc UNUSED_PARAM, char **argv)
 	[...] sched_priority can have a value in the range 0 to 99.
 	[...] SCHED_OTHER or SCHED_BATCH must be assigned static priority 0.
 	[...] SCHED_FIFO or SCHED_RR can have static priority in 1..99 range.
+        it's better to rely on sched_get_priority_min/max routines for min/max
 	*/
-	sp.sched_priority = xstrtou_range(priority, 0, policy != SCHED_OTHER ? 1 : 0, 99);
-
+        sp.sched_priority = xstrtou_range(priority, 0,
+                                              sched_get_priority_min(policy),
+                                              sched_get_priority_max(policy));
 	if (sched_setscheduler(pid, policy, &sp) < 0)
 		bb_perror_msg_and_die("can't %cet pid %d's policy", 's', (int)pid);
 
